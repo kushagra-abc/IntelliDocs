@@ -8,8 +8,15 @@ const ai = new GoogleGenAI({
 });
 
 const GEMINI_MODEL = 'gemini-3.8-flash';
+
 const OLLAMA_MODEL = 'qwen2.5:3b';
-const OLLAMA_URL = 'http://localhost:11434/api/chat';
+
+const OLLAMA_BASE_URL = (
+  process.env.OLLAMA_BASE_URL || 'http://localhost:11434'
+).replace(/\/$/, '');
+
+const OLLAMA_URL = `${OLLAMA_BASE_URL}/api/chat`;
+
 
 // Generate an answer using retrieved document chunks
 export async function generateRAGAnswer(question, documentIds = null) {
