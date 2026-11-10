@@ -1,5 +1,9 @@
 
-const OLLAMA_URL = 'http://localhost:11434/api/embed';
+const OLLAMA_BASE_URL = (
+  process.env.OLLAMA_BASE_URL || 'http://localhost:11434'
+).replace(/\/$/, '');
+
+const OLLAMA_URL = `${OLLAMA_BASE_URL}/api/embed`;
 const EMBEDDING_MODEL = 'nomic-embed-text';
 
 // Generate an embedding for one text or multiple texts
