@@ -89,9 +89,22 @@ ANSWER:
       throw new Error('Gemini returned an empty response.');
     }
 
-  } catch (geminiError) {
-    console.error('Gemini failed:', geminiError.message);
-    console.log('Switching to local Ollama fallback...');
+  } 
+} catch (geminiError) {
+  console.error('Gemini failed:', geminiError.message);
+
+  // Disable Ollama fallback when it is not available.
+  const OLLAMA_FALLBACK_ENABLED =
+    process.env.OLLAMA_FALLBACK_ENABLED !== 'false';
+
+  if (!OLLAMA_FALLBACK_ENABLED) {
+    throw new Error(
+      'Gemini answer generation is temporarily unavailable.'
+    );
+  }
+
+  console.log('Switching to Ollama fallback...');
+
 
     // Use Ollama if Gemini fails
     try {
