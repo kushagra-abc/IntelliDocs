@@ -17,7 +17,6 @@ const OLLAMA_BASE_URL = (
 
 const OLLAMA_URL = `${OLLAMA_BASE_URL}/api/chat`;
 
-
 // Generate an answer using retrieved document chunks
 export async function generateRAGAnswer(question, documentIds = null) {
   // Retrieve relevant chunks from all or selected documents
@@ -89,22 +88,20 @@ ANSWER:
       throw new Error('Gemini returned an empty response.');
     }
 
-  } 
-} catch (geminiError) {
-  console.error('Gemini failed:', geminiError.message);
+  } catch (geminiError) {
+    console.error('Gemini failed:', geminiError.message);
 
-  // Disable Ollama fallback when it is not available.
-  const OLLAMA_FALLBACK_ENABLED =
-    process.env.OLLAMA_FALLBACK_ENABLED !== 'false';
+    // Check whether Ollama fallback is enabled
+    const OLLAMA_FALLBACK_ENABLED =
+      process.env.OLLAMA_FALLBACK_ENABLED !== 'false';
 
-  if (!OLLAMA_FALLBACK_ENABLED) {
-    throw new Error(
-      'Gemini answer generation is temporarily unavailable.'
-    );
-  }
+    if (!OLLAMA_FALLBACK_ENABLED) {
+      throw new Error(
+        'Gemini answer generation is temporarily unavailable.'
+      );
+    }
 
-  console.log('Switching to Ollama fallback...');
-
+    console.log('Switching to Ollama fallback...');
 
     // Use Ollama if Gemini fails
     try {
