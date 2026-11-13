@@ -12,6 +12,56 @@ datasource db {
 model Document {
   id           String   @id @default(uuid())
   fileName     String
+generator client {
+  provider            = "prisma-client"
+  output              = "../generated/prisma"
+  importFileExtension = "ts"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  passwordHash String
+  createdAt    DateTime   @default(now())
+
+  documents    Document[]
+}
+
+model Document {
+  id           String   @id @default(uuid())
+  fileName     String
+  fileSize     Int
+  pageCount    Int
+  createdAt    DateTime @default(now())
+
+  // Nullable temporarily for migration of existing documents
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  chunks       DocumentChunk[]
+
+  @@index([userId])
+}
+
+model DocumentChunk {
+  id          String   @id @default(uuid())
+  documentId  String
+  text        String   @db.Text
+  pageNumber  Int
+  chunkIndex  Int
+
+  embedding   Unsupported("vector(768)")
+
+  document    Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, chunkIndex])
+  @@index([documentId, pageNumber])
+}
+
   fileSize     Int
   pageCount    Int
   createdAt    DateTime @default(now())
