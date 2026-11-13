@@ -2,7 +2,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { searchDocuments } from './searchDocuments.js';
 
-// Initialize Gemini as the primary LLM
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
 });
@@ -17,11 +16,15 @@ const OLLAMA_BASE_URL = (
 
 const OLLAMA_URL = `${OLLAMA_BASE_URL}/api/chat`;
 
-// Generate an answer using retrieved document chunks
-export async function generateRAGAnswer(question, documentIds = null) {
-  // Retrieve relevant chunks from all or selected documents
+// Generate an answer using only the authenticated user's documents
+export async function generateRAGAnswer(
+  question,
+  userId,
+  documentIds = null
+) {
   const relevantChunks = await searchDocuments(
     question,
+    userId,
     3,
     documentIds
   );
@@ -34,19 +37,15 @@ export async function generateRAGAnswer(question, documentIds = null) {
     };
   }
 
-  // Prepare document context
   const context = relevantChunks
-    .map((chunk, index) => {
-      return `
+    .map((chunk, index) => `
 Source ${index + 1}:
 Page: ${chunk.pageNumber}
 Content:
 ${chunk.text}
-`;
-    })
+`)
     .join('\n');
 
-  // Build a common prompt for both LLMs
   const prompt = `
 You are IntelliDocs, an AI-powered document research assistant.
 
@@ -87,11 +86,9 @@ ANSWER:
     if (!answer) {
       throw new Error('Gemini returned an empty response.');
     }
-
   } catch (geminiError) {
     console.error('Gemini failed:', geminiError.message);
 
-    // Check whether Ollama fallback is enabled
     const OLLAMA_FALLBACK_ENABLED =
       process.env.OLLAMA_FALLBACK_ENABLED !== 'false';
 
@@ -103,7 +100,6 @@ ANSWER:
 
     console.log('Switching to Ollama fallback...');
 
-    // Use Ollama if Gemini fails
     try {
       const response = await fetch(OLLAMA_URL, {
         method: 'POST',
@@ -116,7 +112,8 @@ ANSWER:
           messages: [
             {
               role: 'system',
-              content: 'You are IntelliDocs, an AI document research assistant. Answer only using the supplied document context. Do not invent facts or use outside knowledge. Cite page numbers using [Page X].',
+              content:
+                'You are IntelliDocs, an AI document research assistant. Answer only using the supplied document context. Do not invent facts or use outside knowledge. Cite page numbers using [Page X].',
             },
             {
               role: 'user',
@@ -140,7 +137,6 @@ ANSWER:
       }
 
       console.log('Answer generated successfully using Ollama.');
-
     } catch (ollamaError) {
       console.error('Ollama fallback failed:', ollamaError.message);
 
@@ -150,7 +146,6 @@ ANSWER:
     }
   }
 
-  // Return answer and source information
   return {
     answer,
     provider,

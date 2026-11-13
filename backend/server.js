@@ -4,10 +4,14 @@ import express from 'express';
 import cors from 'cors';
 import { GoogleGenAI } from '@google/genai';
 
+import authRoutes from './routes/authRoutes.js';
 import documentRoutes from './routes/documentRoutes.js';
+import { authenticateToken } from './middleware/authMiddleware.js';
+
 import { generateEmbeddings } from './utils/embedding.js';
 import { searchDocuments } from './utils/searchDocuments.js';
 import { generateRAGAnswer } from './utils/rag.js';
+
 import prisma from './lib/prisma.js';
 
 const app = express();
@@ -15,12 +19,13 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
-// Middleware
 app.use(cors({
   origin: FRONTEND_URL,
 }));
 
 app.use(express.json());
+
+app.use('/api/auth', authRoutes);
 app.use('/api/documents', documentRoutes);
 
 // Initialize Gemini
@@ -28,7 +33,7 @@ const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
 });
 
-// Health-check route
+// Public health check for Render
 app.get('/api/health', (req, res) => {
   res.json({
     success: true,
@@ -36,15 +41,19 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Test PostgreSQL connection
-app.get('/api/test-db', async (req, res) => {
+// Protected database test
+app.get('/api/test-db', authenticateToken, async (req, res) => {
   try {
-    const documents = await prisma.document.findMany();
+    const documentCount = await prisma.document.count({
+      where: {
+        userId: req.user.id,
+      },
+    });
 
     res.json({
       success: true,
       message: 'PostgreSQL connected successfully through Prisma!',
-      documentCount: documents.length,
+      documentCount,
     });
   } catch (error) {
     console.error('Database error:', error);
@@ -56,11 +65,9 @@ app.get('/api/test-db', async (req, res) => {
   }
 });
 
-// Test Gemini API
-app.get('/api/test-gemini', async (req, res) => {
+// Protected Gemini test
+app.get('/api/test-gemini', authenticateToken, async (req, res) => {
   try {
-    console.log('Gemini test request received');
-
     const response = await ai.models.generateContent({
       model: 'gemini-3.8-flash',
       contents: 'Explain what a Large Language Model is in two sentences.',
@@ -80,8 +87,8 @@ app.get('/api/test-gemini', async (req, res) => {
   }
 });
 
-// Test local Ollama embeddings
-app.get('/api/test-embedding', async (req, res) => {
+// Protected embedding test
+app.get('/api/test-embedding', authenticateToken, async (req, res) => {
   try {
     const embeddings = await generateEmbeddings(
       'Replay attacks involve recording genuine speech and playing it back.'
@@ -102,8 +109,8 @@ app.get('/api/test-embedding', async (req, res) => {
   }
 });
 
-// Semantic search endpoint
-app.post('/api/search', async (req, res) => {
+// Protected semantic search
+app.post('/api/search', authenticateToken, async (req, res) => {
   try {
     const { query, documentIds = null } = req.body;
 
@@ -128,9 +135,14 @@ app.post('/api/search', async (req, res) => {
       });
     }
 
-    const results = await searchDocuments(query, 3, documentIds);
+    const results = await searchDocuments(
+      query,
+      req.user.id,
+      3,
+      documentIds
+    );
 
-    res.json({
+    return res.json({
       success: true,
       query,
       resultCount: results.length,
@@ -139,15 +151,15 @@ app.post('/api/search', async (req, res) => {
   } catch (error) {
     console.error('Semantic search error:', error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Failed to retrieve relevant document chunks.',
     });
   }
 });
 
-// RAG chat endpoint
-app.post('/api/chat', async (req, res) => {
+// Protected RAG chat
+app.post('/api/chat', authenticateToken, async (req, res) => {
   try {
     const { question, documentIds = null } = req.body;
 
@@ -158,7 +170,6 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
-    // Validate selected document IDs
     if (
       documentIds !== null &&
       (
@@ -173,30 +184,32 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
+    // Verify selected documents belong to the authenticated user
     if (documentIds !== null) {
       const matchingDocuments = await prisma.document.count({
         where: {
           id: {
             in: documentIds,
           },
+          userId: req.user.id,
         },
       });
 
       if (matchingDocuments !== new Set(documentIds).size) {
-        return res.status(400).json({
+        return res.status(404).json({
           success: false,
-          message: 'One or more selected documents do not exist.',
+          message: 'One or more selected documents were not found.',
         });
       }
     }
 
-    // Generate an answer using all or selected documents
     const result = await generateRAGAnswer(
       question.trim(),
+      req.user.id,
       documentIds
     );
 
-    res.json({
+    return res.json({
       success: true,
       question,
       answer: result.answer,
@@ -206,7 +219,7 @@ app.post('/api/chat', async (req, res) => {
   } catch (error) {
     console.error('RAG chat error:', error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Failed to generate an answer.',
     });
@@ -214,5 +227,5 @@ app.post('/api/chat', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`IntelliDocs backend running on http://localhost:${PORT}`);
+  console.log(`IntelliDocs backend running on port ${PORT}`);
 });

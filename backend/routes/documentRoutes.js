@@ -7,8 +7,12 @@ import { randomUUID } from 'crypto';
 import { chunkText } from '../utils/chunkText.js';
 import { generateEmbeddings } from '../utils/embedding.js';
 import prisma from '../lib/prisma.js';
+import { authenticateToken } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
+
+// All document endpoints require authentication
+router.use(authenticateToken);
 
 // Store uploaded PDF in memory temporarily
 const storage = multer.memoryStorage();
@@ -16,15 +20,18 @@ const storage = multer.memoryStorage();
 const upload = multer({
   storage,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10 MB maximum
+    fileSize: 10 * 1024 * 1024,
   },
 });
 
 // GET /api/documents
-// Retrieve all uploaded documents
+// Retrieve only documents belonging to the logged-in user
 router.get('/', async (req, res) => {
   try {
     const documents = await prisma.document.findMany({
+      where: {
+        userId: req.user.id,
+      },
       orderBy: {
         createdAt: 'desc',
       },
@@ -42,7 +49,7 @@ router.get('/', async (req, res) => {
       },
     });
 
-    res.json({
+    return res.json({
       success: true,
       documentCount: documents.length,
       documents: documents.map((document) => ({
@@ -57,7 +64,7 @@ router.get('/', async (req, res) => {
   } catch (error) {
     console.error('Document listing error:', error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Failed to retrieve documents.',
     });
@@ -70,7 +77,6 @@ router.post('/upload', upload.single('document'), async (req, res) => {
   let parser;
 
   try {
-    // Check whether a file was uploaded
     if (!req.file) {
       return res.status(400).json({
         success: false,
@@ -78,7 +84,6 @@ router.post('/upload', upload.single('document'), async (req, res) => {
       });
     }
 
-    // Validate MIME type
     if (req.file.mimetype !== 'application/pdf') {
       return res.status(400).json({
         success: false,
@@ -86,7 +91,7 @@ router.post('/upload', upload.single('document'), async (req, res) => {
       });
     }
 
-    // Validate that the file contains a PDF signature
+    // Validate PDF signature
     const header = req.file.buffer.subarray(0, 1024);
     const pdfSignature = Buffer.from('%PDF-');
 
@@ -97,12 +102,10 @@ router.post('/upload', upload.single('document'), async (req, res) => {
       });
     }
 
-    // Initialize PDF parser
     parser = new PDFParse({
       data: req.file.buffer,
     });
 
-    // Extract text from PDF
     const result = await parser.getText();
 
     if (!result.text.trim()) {
@@ -112,7 +115,6 @@ router.post('/upload', upload.single('document'), async (req, res) => {
       });
     }
 
-    // Divide extracted text into chunks
     const chunks = chunkText(result.pages);
 
     if (chunks.length === 0) {
@@ -143,21 +145,20 @@ router.post('/upload', upload.single('document'), async (req, res) => {
           chunk.embedding.length !== 768
       )
     ) {
-      throw new Error('Invalid embedding dimensions received from Ollama.');
+      throw new Error('Invalid embedding dimensions received.');
     }
 
     // Save document and chunks in a single transaction
     const document = await prisma.$transaction(async (tx) => {
-      // Create document record
       const savedDocument = await tx.document.create({
         data: {
           fileName: req.file.originalname,
           fileSize: req.file.size,
           pageCount: result.total,
+          userId: req.user.id,
         },
       });
 
-      // Save each chunk and its embedding
       for (const chunk of chunks) {
         await tx.$executeRaw`
           INSERT INTO "DocumentChunk"
@@ -176,8 +177,7 @@ router.post('/upload', upload.single('document'), async (req, res) => {
       return savedDocument;
     });
 
-    // Send successful response
-    res.json({
+    return res.status(201).json({
       success: true,
       message: 'PDF processed and stored successfully!',
       documentId: document.id,
@@ -187,18 +187,11 @@ router.post('/upload', upload.single('document'), async (req, res) => {
       textLength: result.text.length,
       chunkCount: chunks.length,
       embeddingDimensions: chunks[0].embedding.length,
-
-      chunkPreview: chunks.slice(0, 2).map((chunk) => ({
-        text: chunk.text,
-        pageNumber: chunk.pageNumber,
-        chunkIndex: chunk.chunkIndex,
-        embeddingPreview: chunk.embedding.slice(0, 5),
-      })),
     });
   } catch (error) {
     console.error('PDF processing error:', error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Failed to process and store PDF.',
     });
@@ -214,14 +207,16 @@ router.post('/upload', upload.single('document'), async (req, res) => {
 });
 
 // DELETE /api/documents/:id
-// Delete a document and its associated chunks
+// Delete only a document belonging to the logged-in user
 router.delete('/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Check whether the document exists
-    const document = await prisma.document.findUnique({
-      where: { id },
+    const document = await prisma.document.findFirst({
+      where: {
+        id,
+        userId: req.user.id,
+      },
     });
 
     if (!document) {
@@ -231,12 +226,13 @@ router.delete('/:id', async (req, res) => {
       });
     }
 
-    // Delete document (associated chunks are deleted through cascade)
     await prisma.document.delete({
-      where: { id },
+      where: {
+        id: document.id,
+      },
     });
 
-    res.json({
+    return res.json({
       success: true,
       message: 'Document and its associated chunks deleted successfully.',
       deletedDocumentId: id,
@@ -245,14 +241,14 @@ router.delete('/:id', async (req, res) => {
   } catch (error) {
     console.error('Document deletion error:', error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Failed to delete document.',
     });
   }
 });
 
-// Handle upload middleware errors, including file-size limits
+// Handle upload middleware errors
 router.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
     if (error.code === 'LIMIT_FILE_SIZE') {
@@ -270,7 +266,7 @@ router.use((error, req, res, next) => {
 
   console.error('Document route error:', error);
 
-  res.status(500).json({
+  return res.status(500).json({
     success: false,
     message: 'An unexpected document processing error occurred.',
   });

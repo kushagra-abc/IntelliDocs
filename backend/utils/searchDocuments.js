@@ -2,19 +2,25 @@
 import { generateEmbeddings } from './embedding.js';
 import prisma from '../lib/prisma.js';
 
-// Find the most relevant chunks from all or selected documents
-export async function searchDocuments(query, limit = 3, documentIds = null) {
-  // Validate the search query
+// Find relevant chunks only from the authenticated user's documents
+export async function searchDocuments(
+  query,
+  userId,
+  limit = 3,
+  documentIds = null
+) {
   if (!query || typeof query !== 'string' || !query.trim()) {
     throw new Error('A valid search query is required.');
   }
 
-  // Validate the result limit
+  if (!userId || typeof userId !== 'string') {
+    throw new Error('A valid user ID is required.');
+  }
+
   if (!Number.isInteger(limit) || limit < 1 || limit > 10) {
     throw new Error('Search limit must be between 1 and 10.');
   }
 
-  // Validate selected document IDs, if provided
   if (
     documentIds !== null &&
     (
@@ -26,56 +32,54 @@ export async function searchDocuments(query, limit = 3, documentIds = null) {
     throw new Error('Please provide valid document IDs.');
   }
 
-  // Generate an embedding for the user's question
   const embeddings = await generateEmbeddings(query.trim());
   const queryEmbedding = embeddings[0];
 
-  // Verify that the embedding has 768 dimensions
   if (!queryEmbedding || queryEmbedding.length !== 768) {
-    throw new Error('Invalid query embedding received from Ollama.');
+    throw new Error('Invalid query embedding received.');
   }
 
-  // Convert the embedding array into pgvector format
   const vectorString = `[${queryEmbedding.join(',')}]`;
 
   let results;
 
   if (documentIds === null) {
-    // Search across all uploaded documents
+    // Search across all documents owned by this user
     results = await prisma.$queryRaw`
       SELECT
-        "id",
-        "documentId",
-        "text",
-        "pageNumber",
-        "chunkIndex",
-        1 - ("embedding" <=> CAST(${vectorString} AS vector)) AS similarity
-      FROM "DocumentChunk"
-      ORDER BY "embedding" <=> CAST(${vectorString} AS vector) ASC
+        c."id",
+        c."documentId",
+        c."text",
+        c."pageNumber",
+        c."chunkIndex",
+        1 - (c."embedding" <=> CAST(${vectorString} AS vector)) AS similarity
+      FROM "DocumentChunk" c
+      INNER JOIN "Document" d
+        ON c."documentId" = d."id"
+      WHERE d."userId" = ${userId}
+      ORDER BY c."embedding" <=> CAST(${vectorString} AS vector) ASC
       LIMIT ${limit}
     `;
   } else {
-    // Search only within the selected documents
-    const selectedIds = documentIds.join(',');
-
+    // Search only selected documents owned by this user
     results = await prisma.$queryRaw`
       SELECT
-        "id",
-        "documentId",
-        "text",
-        "pageNumber",
-        "chunkIndex",
-        1 - ("embedding" <=> CAST(${vectorString} AS vector)) AS similarity
-      FROM "DocumentChunk"
-      WHERE "documentId" = ANY(
-        string_to_array(${selectedIds}, ',')
-      )
-      ORDER BY "embedding" <=> CAST(${vectorString} AS vector) ASC
+        c."id",
+        c."documentId",
+        c."text",
+        c."pageNumber",
+        c."chunkIndex",
+        1 - (c."embedding" <=> CAST(${vectorString} AS vector)) AS similarity
+      FROM "DocumentChunk" c
+      INNER JOIN "Document" d
+        ON c."documentId" = d."id"
+      WHERE d."userId" = ${userId}
+        AND c."documentId" = ANY(${documentIds}::text[])
+      ORDER BY c."embedding" <=> CAST(${vectorString} AS vector) ASC
       LIMIT ${limit}
     `;
   }
 
-  // Convert similarity values into JavaScript numbers
   return results.map((result) => ({
     ...result,
     similarity: Number(result.similarity),
