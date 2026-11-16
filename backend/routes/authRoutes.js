@@ -12,6 +12,14 @@ const router = express.Router();
 
 // POST /api/auth/register
 router.post('/register', async (req, res) => {
+  // Registration can be enabled or disabled independently of login
+  if (process.env.ALLOW_REGISTRATION !== 'true') {
+    return res.status(403).json({
+      success: false,
+      message: 'Registration is temporarily disabled.',
+    });
+  }
+
   try {
     const { email, password } = req.body;
 
@@ -24,7 +32,8 @@ router.post('/register', async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message: 'Provide a valid email and a password between 8 and 128 characters.',
+        message:
+          'Provide a valid email and a password between 8 and 128 characters.',
       });
     }
 
@@ -71,6 +80,13 @@ router.post('/register', async (req, res) => {
       user,
     });
   } catch (error) {
+    if (error.code === 'P2002') {
+      return res.status(409).json({
+        success: false,
+        message: 'An account with this email already exists.',
+      });
+    }
+
     console.error('Registration error:', error);
 
     return res.status(500).json({
@@ -81,13 +97,8 @@ router.post('/register', async (req, res) => {
 });
 
 // POST /api/auth/login
+// Login remains available even when registration is disabled
 router.post('/login', async (req, res) => {
-    if (process.env.ALLOW_REGISTRATION !== 'true') {
-        return res.status(403).json({
-        success: false,
-        message: 'Registration is temporarily disabled.',
-        });
-    }
   try {
     const { email, password } = req.body;
 

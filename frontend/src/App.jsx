@@ -1,19 +1,26 @@
 
 import { useEffect, useRef, useState } from 'react';
 import './App.css';
+import './Auth.css';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const TOKEN_KEY = 'intellidocs-token';
 
 function App() {
+  const [user, setUser] = useState(null);
+  const [checkingSession, setCheckingSession] = useState(true);
+  const [authMode, setAuthMode] = useState('login');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState('');
+
   const [documents, setDocuments] = useState([]);
   const [messages, setMessages] = useState([]);
   const [question, setQuestion] = useState('');
-
-  // null means search all documents
-  // An array means search only selected documents
   const [selectedDocumentIds, setSelectedDocumentIds] = useState(null);
 
-  const [loadingDocuments, setLoadingDocuments] = useState(true);
+  const [loadingDocuments, setLoadingDocuments] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [sending, setSending] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
@@ -21,7 +28,6 @@ function App() {
   const [error, setError] = useState('');
   const [uploadMessage, setUploadMessage] = useState('');
 
-  // Restore the saved theme preference
   const [theme, setTheme] = useState(
     () => localStorage.getItem('intellidocs-theme') || 'light'
   );
@@ -29,17 +35,54 @@ function App() {
   const fileInputRef = useRef(null);
   const chatEndRef = useRef(null);
 
-  // Save theme preference and apply it to the application
+  // Save theme preference.
   useEffect(() => {
     localStorage.setItem('intellidocs-theme', theme);
   }, [theme]);
 
-  // Fetch all uploaded documents
+  // Clear session when the backend rejects the token.
+  function clearSession() {
+    localStorage.removeItem(TOKEN_KEY);
+    setUser(null);
+    setDocuments([]);
+    setMessages([]);
+    setQuestion('');
+    setSelectedDocumentIds(null);
+    setError('');
+    setUploadMessage('');
+  }
+
+  // Common API helper: automatically attaches the JWT.
+  async function apiFetch(path, options = {}) {
+    const token = localStorage.getItem(TOKEN_KEY);
+
+    const headers = {
+      ...options.headers,
+    };
+
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    const response = await fetch(`${API_URL}${path}`, {
+      ...options,
+      headers,
+    });
+
+    if (response.status === 401 && token) {
+      clearSession();
+      throw new Error('Your session has expired. Please log in again.');
+    }
+
+    return response;
+  }
+
+  // Fetch documents belonging to the logged-in user.
   async function fetchDocuments() {
     try {
       setLoadingDocuments(true);
 
-      const response = await fetch(`${API_URL}/documents`);
+      const response = await apiFetch('/documents');
       const data = await response.json();
 
       if (!response.ok) {
@@ -54,19 +97,103 @@ function App() {
     }
   }
 
-  // Load documents when the application starts
+  // Restore an existing login session.
   useEffect(() => {
-    fetchDocuments();
+    async function restoreSession() {
+      const token = localStorage.getItem(TOKEN_KEY);
+
+      if (!token) {
+        setCheckingSession(false);
+        return;
+      }
+
+      try {
+        const response = await fetch(`${API_URL}/auth/me`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          localStorage.removeItem(TOKEN_KEY);
+          return;
+        }
+
+        setUser(data.user);
+        await fetchDocuments();
+      } catch {
+        localStorage.removeItem(TOKEN_KEY);
+      } finally {
+        setCheckingSession(false);
+      }
+    }
+
+    restoreSession();
   }, []);
 
-  // Keep the latest chat message visible
+  // Login or register.
+  async function handleAuth(event) {
+    event.preventDefault();
+
+    if (authLoading) return;
+
+    setAuthLoading(true);
+    setAuthError('');
+
+    try {
+      const endpoint =
+        authMode === 'login' ? '/auth/login' : '/auth/register';
+
+      const response = await fetch(`${API_URL}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: authEmail.trim(),
+          password: authPassword,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message || 'Authentication failed.');
+      }
+
+      localStorage.setItem(TOKEN_KEY, data.token);
+      setUser(data.user);
+      setAuthPassword('');
+      setError('');
+      setAuthError('');
+
+      await fetchDocuments();
+    } catch (err) {
+      setAuthError(err.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  // Logout.
+  function handleLogout() {
+    clearSession();
+    setAuthEmail('');
+    setAuthPassword('');
+    setAuthMode('login');
+    setAuthError('');
+  }
+
+  // Keep the latest chat message visible.
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({
       behavior: 'smooth',
     });
   }, [messages, sending]);
 
-  // Upload a PDF
+  // Upload a PDF.
   async function handleUpload(event) {
     const file = event.target.files?.[0];
 
@@ -92,7 +219,7 @@ function App() {
       setError('');
       setUploadMessage('');
 
-      const response = await fetch(`${API_URL}/documents/upload`, {
+      const response = await apiFetch('/documents/upload', {
         method: 'POST',
         body: formData,
       });
@@ -113,7 +240,7 @@ function App() {
     }
   }
 
-  // Select or deselect an individual document
+  // Select or deselect an individual document.
   function handleDocumentSelection(documentId) {
     setSelectedDocumentIds((previous) => {
       if (previous === null) {
@@ -132,12 +259,12 @@ function App() {
     });
   }
 
-  // Switch back to searching all documents
+  // Search all documents.
   function handleSelectAllDocuments() {
     setSelectedDocumentIds(null);
   }
 
-  // Delete a document
+  // Delete a document.
   async function handleDelete(document) {
     const confirmed = window.confirm(
       `Delete "${document.fileName}" and all its stored chunks?`
@@ -150,12 +277,9 @@ function App() {
       setError('');
       setUploadMessage('');
 
-      const response = await fetch(
-        `${API_URL}/documents/${document.id}`,
-        {
-          method: 'DELETE',
-        }
-      );
+      const response = await apiFetch(`/documents/${document.id}`, {
+        method: 'DELETE',
+      });
 
       const data = await response.json();
 
@@ -167,7 +291,6 @@ function App() {
         previous.filter((item) => item.id !== document.id)
       );
 
-      // Remove deleted document from current selection
       setSelectedDocumentIds((previous) => {
         if (previous === null) return null;
 
@@ -186,7 +309,7 @@ function App() {
     }
   }
 
-  // Start a new chat without deleting uploaded documents
+  // Start a new chat without deleting documents.
   function handleNewChat() {
     setMessages([]);
     setQuestion('');
@@ -194,7 +317,7 @@ function App() {
     setUploadMessage('');
   }
 
-  // Send a question to the RAG backend
+  // Send a question to the RAG backend.
   async function handleSend(event) {
     event?.preventDefault();
 
@@ -216,7 +339,7 @@ function App() {
     setError('');
 
     try {
-      const response = await fetch(`${API_URL}/chat`, {
+      const response = await apiFetch('/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -249,7 +372,6 @@ function App() {
     }
   }
 
-  // Label showing the current document search scope
   const selectionLabel =
     selectedDocumentIds === null
       ? 'All documents'
@@ -257,12 +379,125 @@ function App() {
           selectedDocumentIds.length === 1 ? '' : 's'
         } selected`;
 
+  // Session restoration screen.
+  if (checkingSession) {
+    return (
+      <div className="auth-page">
+        <div className="auth-card auth-loading">
+          <div className="auth-brand-icon">✦</div>
+          <h2>IntelliDocs</h2>
+          <p>Restoring your workspace...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Login and registration screen.
+  if (!user) {
+    return (
+      <div className="auth-page">
+        <div className="auth-card">
+          <div className="auth-brand">
+            <div className="auth-brand-icon">✦</div>
+            <div>
+              <h1>IntelliDocs</h1>
+              <p>Document intelligence</p>
+            </div>
+          </div>
+
+          <div className="auth-heading">
+            <h2>
+              {authMode === 'login'
+                ? 'Welcome back'
+                : 'Create your account'}
+            </h2>
+            <p>
+              {authMode === 'login'
+                ? 'Sign in to access your document workspace.'
+                : 'Create an account to start using IntelliDocs.'}
+            </p>
+          </div>
+
+          <form className="auth-form" onSubmit={handleAuth}>
+            <label htmlFor="auth-email">Email address</label>
+            <input
+              id="auth-email"
+              type="email"
+              placeholder="you@example.com"
+              value={authEmail}
+              onChange={(event) => setAuthEmail(event.target.value)}
+              autoComplete="email"
+              required
+            />
+
+            <label htmlFor="auth-password">Password</label>
+            <input
+              id="auth-password"
+              type="password"
+              placeholder="Enter your password"
+              value={authPassword}
+              onChange={(event) => setAuthPassword(event.target.value)}
+              autoComplete={
+                authMode === 'login' ? 'current-password' : 'new-password'
+              }
+              minLength={8}
+              maxLength={128}
+              required
+            />
+
+            {authMode === 'register' && (
+              <p className="auth-hint">
+                Password must contain at least 8 characters.
+              </p>
+            )}
+
+            {authError && (
+              <div className="auth-error">{authError}</div>
+            )}
+
+            <button
+              type="submit"
+              className="auth-submit"
+              disabled={authLoading}
+            >
+              {authLoading
+                ? 'Please wait...'
+                : authMode === 'login'
+                  ? 'Sign in'
+                  : 'Create account'}
+            </button>
+          </form>
+
+          <div className="auth-switch">
+            {authMode === 'login'
+              ? "Don't have an account?"
+              : 'Already have an account?'}
+
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode((previous) =>
+                  previous === 'login' ? 'register' : 'login'
+                );
+                setAuthError('');
+              }}
+            >
+              {authMode === 'login' ? 'Create account' : 'Sign in'}
+            </button>
+          </div>
+
+          <p className="auth-security-note">
+            Your documents are private to your account.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`app-layout ${theme}`}>
-
       {/* Sidebar */}
       <aside className="sidebar">
-
         <div className="brand">
           <div className="brand-icon">✦</div>
           <div>
@@ -271,7 +506,6 @@ function App() {
           </div>
         </div>
 
-        {/* Hidden PDF input */}
         <input
           ref={fileInputRef}
           type="file"
@@ -290,7 +524,6 @@ function App() {
         </button>
 
         <div className="sidebar-section">
-
           <div className="section-heading">
             <span>YOUR DOCUMENTS</span>
             <span className="document-count">{documents.length}</span>
@@ -374,16 +607,14 @@ function App() {
         <div className="sidebar-footer">
           <div className="status-indicator"></div>
           <div>
-            <p>Local embeddings active</p>
-            <span>Ollama · nomic-embed-text</span>
+            <p>AI processing active</p>
+            <span>Gemini · Cloud embeddings</span>
           </div>
         </div>
-
       </aside>
 
       {/* Main workspace */}
       <main className="main-content">
-
         <header className="topbar">
           <div>
             <p className="breadcrumb">Workspace / Research assistant</p>
@@ -393,7 +624,6 @@ function App() {
             </p>
           </div>
 
-          {/* Theme switch and New Chat */}
           <div className="topbar-actions">
             <button
               className="theme-toggle"
@@ -414,14 +644,20 @@ function App() {
             >
               + New chat
             </button>
+
+            <button
+              className="theme-toggle"
+              onClick={handleLogout}
+              title="Sign out"
+            >
+              Sign out
+            </button>
           </div>
         </header>
 
         <section className="chat-container">
-
           {messages.length === 0 ? (
             <div className="welcome-screen">
-
               <div className="welcome-icon">✦</div>
 
               <h2>Your documents, understood.</h2>
@@ -465,23 +701,19 @@ function App() {
                   Upload a PDF from the sidebar to get started.
                 </p>
               )}
-
             </div>
           ) : (
             <div className="message-list">
-
               {messages.map((message) => (
                 <div
                   className={`message-row ${message.role}`}
                   key={message.id}
                 >
-
                   <div className="message-avatar">
                     {message.role === 'user' ? 'U' : '✦'}
                   </div>
 
                   <div className="message-body">
-
                     <div className="message-heading">
                       <strong>
                         {message.role === 'user' ? 'You' : 'IntelliDocs'}
@@ -519,7 +751,6 @@ function App() {
                         </div>
                       </div>
                     )}
-
                   </div>
                 </div>
               ))}
@@ -546,10 +777,8 @@ function App() {
               <div ref={chatEndRef}></div>
             </div>
           )}
-
         </section>
 
-        {/* Alerts */}
         {(error || uploadMessage) && (
           <div className={`alert ${error ? 'error-alert' : 'success-alert'}`}>
             <span>{error ? '⚠' : '✓'}</span>
@@ -566,9 +795,7 @@ function App() {
           </div>
         )}
 
-        {/* Chat input */}
         <div className="chat-input-area">
-
           <form className="chat-input-box" onSubmit={handleSend}>
             <textarea
               value={question}
@@ -605,9 +832,7 @@ function App() {
             IntelliDocs uses document context to generate answers.
             Always verify important information against the original PDF.
           </p>
-
         </div>
-
       </main>
     </div>
   );
